@@ -66,14 +66,15 @@ fn try_process_inline_database_wrapper_dir(
     return None;
   }
 
-  let (csv_view_name, _csv_view_id) = name_and_id_from_path(&csv_all_path).ok()?;
+  let dir_file_name = dir_path.file_name()?.to_string_lossy().to_string();
+  let parent_path = dir_path.parent()?;
   process_csv_dir(
-    &csv_view_name,
+    &dir_file_name,
     host,
     workspace_id,
     dir_name,
     dir_id,
-    dir_path,
+    parent_path,
     &csv_all_path,
     &csv_path,
     notion_export,
@@ -151,13 +152,21 @@ pub(crate) fn collect_entry_resources(
 }
 
 fn normalize_notion_name(name: &str) -> String {
-  name.trim().to_lowercase()
+  name
+    .trim()
+    .replace('.', " ")
+    .replace('_', " ")
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_lowercase()
 }
 
  fn normalize_database_row_name(name: &str) -> String {
    name
      .trim()
      .replace('.', " ")
+     .replace('_', " ")
      .split_whitespace()
      .collect::<Vec<_>>()
      .join(" ")
