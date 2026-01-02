@@ -16,6 +16,70 @@ use std::path::{Component, Path, PathBuf};
 use tracing::{error, warn};
 use walkdir::{DirEntry, WalkDir};
 
+fn try_process_inline_database_wrapper_dir(
+  host: &str,
+  workspace_id: &str,
+  dir_path: &Path,
+  dir_name: String,
+  dir_id: Option<String>,
+  md_file_path: &PathBuf,
+  notion_export: &NotionExportContext,
+) -> Option<NotionPage> {
+  let md_content = fs::read_to_string(md_file_path).ok()?;
+  let non_empty_lines = md_content
+    .lines()
+    .map(|l| l.trim())
+    .filter(|l| !l.is_empty())
+    .collect::<Vec<_>>();
+
+  if non_empty_lines.len() != 2 {
+    return None;
+  }
+  if !non_empty_lines[0].starts_with('#') {
+    return None;
+  }
+
+  let re = Regex::new(r"\[[^\]]*\]\(([^)]+\.csv)\)").ok()?;
+  let csv_rel = re
+    .captures(non_empty_lines[1])
+    .ok()
+    .flatten()
+    .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))?;
+
+  let csv_rel_decoded = percent_decode_str(&csv_rel)
+    .decode_utf8()
+    .ok()
+    .map(|s| s.to_string())
+    .unwrap_or(csv_rel);
+
+  let md_parent = md_file_path.parent()?;
+  let csv_path = md_parent.join(csv_rel_decoded);
+  let csv_file_name = csv_path.file_name()?.to_string_lossy().to_string();
+
+  let csv_all_path = if csv_file_name.to_ascii_lowercase().ends_with("_all.csv") {
+    csv_path.clone()
+  } else {
+    let stem = csv_path.file_stem()?.to_string_lossy().to_string();
+    csv_path.with_file_name(format!("{}_all.csv", stem))
+  };
+  if !csv_all_path.exists() {
+    return None;
+  }
+
+  let (csv_view_name, _csv_view_id) = name_and_id_from_path(&csv_all_path).ok()?;
+  process_csv_dir(
+    &csv_view_name,
+    host,
+    workspace_id,
+    dir_name,
+    dir_id,
+    dir_path,
+    &csv_all_path,
+    &csv_path,
+    notion_export,
+  )
+}
+
 pub(crate) fn get_file_size(path: &PathBuf) -> std::io::Result<u64> {
   let metadata = fs::metadata(path)?;
   let file_size = metadata.len();
@@ -253,6 +317,19 @@ pub(crate) fn process_entry(
       find_matching_markdown_file(parent_path, &name, id.as_deref())
     {
       let id = id.or(md_id);
+
+      if let Some(database_page) = try_process_inline_database_wrapper_dir(
+        host,
+        workspace_id,
+        path,
+        name.clone(),
+        id.clone(),
+        &md_file_path,
+        notion_export,
+      ) {
+        return Some(database_page);
+      }
+
       process_md_dir(
         host,
         workspace_id,
