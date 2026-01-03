@@ -173,6 +173,57 @@ fn normalize_notion_name(name: &str) -> String {
      .to_lowercase()
  }
 
+ fn normalize_csv_header(header: &str) -> String {
+   header.trim().to_lowercase()
+ }
+
+ fn is_likely_title_header(header: &str) -> bool {
+   let header = normalize_csv_header(header);
+   matches!(header.as_str(), "name" | "title" | "名称" | "标题")
+     || header.contains("name")
+     || header.contains("title")
+     || header.contains("名称")
+     || header.contains("标题")
+ }
+
+ fn title_column_candidates(columns: &[String]) -> Vec<usize> {
+   let mut exact = Vec::new();
+   let mut contains = Vec::new();
+
+   for (idx, col) in columns.iter().enumerate() {
+     let header = normalize_csv_header(col);
+     if matches!(header.as_str(), "name" | "title" | "名称" | "标题") {
+       exact.push(idx);
+     } else if is_likely_title_header(&header) {
+       contains.push(idx);
+     }
+   }
+
+   let mut used = vec![false; columns.len()];
+   let mut out = Vec::new();
+
+   let mut push = |idx: usize, out: &mut Vec<usize>, used: &mut [bool]| {
+     if idx < used.len() && !used[idx] {
+       used[idx] = true;
+       out.push(idx);
+     }
+   };
+
+   for idx in exact {
+     push(idx, &mut out, &mut used);
+   }
+   for idx in contains {
+     push(idx, &mut out, &mut used);
+   }
+   push(0, &mut out, &mut used);
+
+   for idx in 0..columns.len() {
+     push(idx, &mut out, &mut used);
+   }
+
+   out
+ }
+
 fn is_matching_notion_entry(
   a_name: &str,
   a_id: Option<&str>,
@@ -438,6 +489,7 @@ fn process_csv_dir(
       all_csv_file_path
     };
     let csv_file = parse_csv(csv_source_path);
+    let title_col_candidates = title_column_candidates(&csv_file.columns);
     for sub_entry in walk_sub_dir(&csv_dir) {
       if let Some(mut page) = process_entry(host, workspace_id, &sub_entry, true, notion_export) {
         if page.children.iter().any(|c| c.notion_file.is_markdown()) {
@@ -446,56 +498,70 @@ fn process_csv_dir(
 
         let normalized_page_name = normalize_database_row_name(&page.notion_name);
         for row in csv_file.rows.iter() {
-          let Some(row_title) = row.get(0) else {
-            continue;
-          };
-          let normalized_row_title = normalize_database_row_name(row_title);
-          if normalized_page_name.starts_with(&normalized_row_title)
-            || normalized_row_title.starts_with(&normalized_page_name)
-          {
-            page.notion_name = row_title.to_string();
-            if let Some(file_path) = page.notion_file.file_path() {
-              if let Ok(md_content) = fs::read_to_string(file_path) {
-                if md_content.is_empty() {
-                  continue;
-                }
-
-                // In Notion, each database row is represented as a markdown file.
-                // The content between the first-level heading (H1) and the second empty line
-                // contains key-value pairs corresponding to the columns/cells of that row.
-                //
-                // Example:
-                //  # Row page name
-                //                           <- first empty line
-                //  Status: Not started
-                //  Multi-select: [Not started]
-                //  Text: ...
-                //                           <- second empty line
-                //  Content
-                if process_row_md_content(md_content, file_path).is_ok() {
-                  // remove page's children that can be found in the csv_relation
-                  page.children.retain(|child| {
-                    if let Some(file_path) = child.notion_file.file_path() {
-                      if let Ok(file_name) = file_name_from_path(file_path) {
-                        return notion_export
-                          .csv_relation
-                          .get(&file_name.to_lowercase())
-                          .is_none();
-                      }
-                    }
-                    true
-                  });
-
-                  // When importing a Notion database, there is no direct link between the database and its views.
-                  // If a document in a database row references a database view, we cannot determine which database it belongs to.
-                  // We use file csv relation to determine the relation between the database and its views.
-                  row_documents.push(ImportedRowDocument { page });
-                }
-              }
+          let mut matched_title: Option<&String> = None;
+          for &col_index in title_col_candidates.iter() {
+            let Some(cell) = row.get(col_index) else {
+              continue;
+            };
+            if cell.trim().is_empty() {
+              continue;
             }
 
-            break;
+            let normalized_row_title = normalize_database_row_name(cell);
+            if normalized_page_name.starts_with(&normalized_row_title)
+              || normalized_row_title.starts_with(&normalized_page_name)
+            {
+              matched_title = Some(cell);
+              break;
+            }
           }
+
+          let Some(row_title) = matched_title else {
+            continue;
+          };
+
+          page.notion_name = row_title.clone();
+          if let Some(file_path) = page.notion_file.file_path() {
+            if let Ok(md_content) = fs::read_to_string(file_path) {
+              if md_content.is_empty() {
+                continue;
+              }
+
+              // In Notion, each database row is represented as a markdown file.
+              // The content between the first-level heading (H1) and the second empty line
+              // contains key-value pairs corresponding to the columns/cells of that row.
+              //
+              // Example:
+              //  # Row page name
+              //                           <- first empty line
+              //  Status: Not started
+              //  Multi-select: [Not started]
+              //  Text: ...
+              //                           <- second empty line
+              //  Content
+              if process_row_md_content(md_content, file_path).is_ok() {
+                // remove page's children that can be found in the csv_relation
+                page.children.retain(|child| {
+                  if let Some(file_path) = child.notion_file.file_path() {
+                    if let Ok(file_name) = file_name_from_path(file_path) {
+                      return notion_export
+                        .csv_relation
+                        .get(&file_name.to_lowercase())
+                        .is_none();
+                    }
+                  }
+                  true
+                });
+
+                // When importing a Notion database, there is no direct link between the database and its views.
+                // If a document in a database row references a database view, we cannot determine which database it belongs to.
+                // We use file csv relation to determine the relation between the database and its views.
+                row_documents.push(ImportedRowDocument { page });
+              }
+            }
+          }
+
+          break;
         }
       }
 

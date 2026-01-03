@@ -19,6 +19,7 @@ use collab_database::database_trait::NoPersistenceDatabaseCollabService;
 use collab_database::rows::RowId;
 use collab_database::template::builder::FileUrlBuilder;
 use collab_document::document_data::default_document_data;
+use csv::Reader;
 use percent_encoding::percent_decode_str;
 use serde::Serialize;
 use serde_json::json;
@@ -29,6 +30,141 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
 use tracing::error;
+
+fn normalize_csv_header(header: &str) -> String {
+  header.trim().to_lowercase()
+}
+
+fn is_likely_title_header(header: &str) -> bool {
+  let header = normalize_csv_header(header);
+  if matches!(header.as_str(), "name" | "title" | "名称" | "标题") {
+    return true;
+  }
+
+  if header.contains("名称") || header.contains("标题") {
+    return true;
+  }
+
+  header
+    .split(|c: char| !c.is_ascii_alphanumeric())
+    .any(|token| matches!(token, "name" | "title"))
+}
+
+fn title_column_candidates(headers: &[String]) -> Vec<usize> {
+  let mut exact = Vec::new();
+  let mut contains = Vec::new();
+
+  for (idx, header) in headers.iter().enumerate() {
+    let header_norm = normalize_csv_header(header);
+    if matches!(header_norm.as_str(), "name" | "title" | "名称" | "标题") {
+      exact.push(idx);
+    } else if is_likely_title_header(&header_norm) {
+      contains.push(idx);
+    }
+  }
+
+  let mut used = vec![false; headers.len()];
+  let mut out = Vec::new();
+
+  let mut push = |idx: usize, out: &mut Vec<usize>, used: &mut [bool]| {
+    if idx < used.len() && !used[idx] {
+      used[idx] = true;
+      out.push(idx);
+    }
+  };
+
+  for idx in exact {
+    push(idx, &mut out, &mut used);
+  }
+  for idx in contains {
+    push(idx, &mut out, &mut used);
+  }
+  push(0, &mut out, &mut used);
+
+  for idx in 0..headers.len() {
+    push(idx, &mut out, &mut used);
+  }
+
+  out
+}
+
+fn parse_csv_from_str(content: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+  let mut reader = Reader::from_reader(content.as_bytes());
+  let headers = reader
+    .headers()
+    .ok()?
+    .iter()
+    .map(|s| s.to_string())
+    .collect::<Vec<String>>();
+
+  let rows = reader
+    .records()
+    .flat_map(|r| r.ok())
+    .map(|record| {
+      record
+        .into_iter()
+        .filter_map(|s| Some(percent_decode_str(s).decode_utf8().ok()?.to_string()))
+        .collect::<Vec<String>>()
+    })
+    .collect::<Vec<Vec<String>>>();
+
+  Some((headers, rows))
+}
+
+fn select_title_column_index(
+  headers: &[String],
+  rows: &[Vec<String>],
+  row_titles: &HashSet<String>,
+) -> usize {
+  let candidates = title_column_candidates(headers);
+  let preferred = candidates.first().copied().unwrap_or(0);
+
+  if row_titles.is_empty() {
+    return preferred;
+  }
+
+  let mut best_idx = preferred;
+  let mut best_score = 0usize;
+
+  for &idx in candidates.iter() {
+    let mut score = 0usize;
+    for row in rows.iter() {
+      if let Some(cell) = row.get(idx) {
+        let cell = cell.trim();
+        if !cell.is_empty() && row_titles.contains(cell) {
+          score += 1;
+        }
+      }
+    }
+    if score > best_score {
+      best_score = score;
+      best_idx = idx;
+    }
+  }
+
+  if best_score == 0 {
+    preferred
+  } else {
+    best_idx
+  }
+}
+
+fn reorder_csv_template_primary_column(csv_template: &mut CSVTemplate, title_idx: usize) {
+  if title_idx == 0 {
+    return;
+  }
+
+  if title_idx >= csv_template.fields.len() {
+    return;
+  }
+
+  csv_template.fields.swap(0, title_idx);
+  for row in csv_template.rows.iter_mut() {
+    if title_idx < row.len() {
+      row.swap(0, title_idx);
+    }
+  }
+}
 
 #[derive(Debug, Clone)]
 pub struct NotionPage {
@@ -508,6 +644,16 @@ impl NotionPage {
           .filter_map(|p| p.to_str().map(|s| s.to_string()))
           .collect();
 
+        let row_titles = row_documents
+          .iter()
+          .map(|d| d.page.notion_name.trim().to_string())
+          .filter(|s| !s.is_empty())
+          .collect::<HashSet<_>>();
+
+        let title_idx = parse_csv_from_str(&content)
+          .map(|(headers, rows)| select_title_column_index(&headers, &rows, &row_titles))
+          .unwrap_or(0);
+
         let csv_resource = CSVResource {
           server_url: self.host.clone(),
           workspace_id: self.workspace_id.clone(),
@@ -518,6 +664,7 @@ impl NotionPage {
         let mut csv_template =
           CSVTemplate::try_from_reader(content.as_bytes(), true, Some(csv_resource))?;
         csv_template.reset_view_id(self.view_id.clone());
+        reorder_csv_template_primary_column(&mut csv_template, title_idx);
         let database_id = csv_template.database_id.clone();
 
         let file_url_builder = FileUrlBuilderImpl {
