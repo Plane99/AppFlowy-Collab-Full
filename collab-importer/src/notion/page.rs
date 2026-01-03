@@ -728,12 +728,19 @@ impl NotionPage {
         let content = self.as_database().await?;
         let database_id = content.database.get_database_id();
         let mut resources = vec![content.resource];
-        let view_ids = content
-          .database
-          .get_all_views()
-          .into_iter()
-          .map(|view| view.id)
-          .collect::<Vec<_>>();
+        let mut view_ids = vec![];
+        if let Some(view_id) = content.database.get_first_database_view_id() {
+          view_ids.push(view_id);
+        }
+        view_ids.extend(
+          content
+            .database
+            .get_all_views()
+            .into_iter()
+            .map(|view| view.id),
+        );
+        let mut seen = HashSet::new();
+        view_ids.retain(|id| seen.insert(id.clone()));
 
         let mut imported_collabs = content
           .database
