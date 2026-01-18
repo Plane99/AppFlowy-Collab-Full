@@ -551,6 +551,33 @@ impl NotionPage {
         if let Some(attrs) = &attrs {
           if let Some(href_value) = attrs.get("href") {
             let delta_str = href_value.to_string();
+            let delta_str = delta_str.trim_matches('"').to_string();
+            if let Ok(decoded) = percent_decode_str(&delta_str).decode_utf8() {
+              let decoded = decoded.to_string();
+              if !decoded.starts_with("http://") && !decoded.starts_with("https://") {
+                let ext = Path::new(&decoded)
+                  .extension()
+                  .and_then(|e| e.to_str())
+                  .unwrap_or("")
+                  .to_ascii_lowercase();
+
+                if !ext.is_empty() && ext != "md" && ext != "csv" {
+                  let full_path = parent_path.join(decoded);
+                  let pos = resources.iter().position(|r| r == &full_path);
+                  if let Some(pos) = pos {
+                    if let Some(url) = file_url_builder(&self.view_id, full_path).await {
+                      delta_resources.insert(resources[pos].clone());
+
+                      let mut new_attrs = attrs.clone();
+                      new_attrs.insert("href".into(), url.into());
+                      *delta = TextDelta::Inserted(v.clone(), Some(new_attrs));
+                      is_changed = true;
+                      continue;
+                    }
+                  }
+                }
+              }
+            }
 
             // Replace links in the deltas with the corresponding view IDs
             if let Ok(links) = extract_external_links(&delta_str) {

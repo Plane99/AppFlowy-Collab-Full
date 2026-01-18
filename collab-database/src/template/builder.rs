@@ -14,7 +14,7 @@ use crate::fields::timestamp_type_option::TimestampTypeOption;
 use crate::rows::new_cell_builder;
 use crate::template::check_list_parse::ChecklistCellData;
 use crate::template::csv::CSVResource;
-use crate::template::date_parse::replace_cells_with_timestamp;
+use crate::template::date_parse::{parse_date_cell, replace_cells_with_timestamp};
 use crate::template::media_parse::replace_cells_with_files;
 use crate::template::option_parse::{
   SELECT_OPTION_SEPARATOR, build_options_from_cells, replace_cells_with_options_id,
@@ -208,11 +208,22 @@ impl FieldTemplateBuilder {
         cell_template
       },
       FieldType::DateTime => {
-        let cell_template = replace_cells_with_timestamp(self.cells)
+        let cell_template = self
+          .cells
           .into_iter()
-          .map(|id| {
+          .map(|cell| {
             let mut map = new_cell_builder(field_type);
-            map.insert(CELL_DATA.to_string(), Any::from(id));
+            if let Some(parsed) = parse_date_cell(&cell) {
+              map.insert(CELL_DATA.to_string(), Any::from(parsed.timestamp.to_string()));
+              if let Some(end) = parsed.end_timestamp {
+                map.insert("end_timestamp".to_string(), Any::from(end.to_string()));
+              }
+              map.insert("include_time".to_string(), Any::from(parsed.include_time));
+              map.insert("is_range".to_string(), Any::from(parsed.is_range));
+              map.insert("reminder_id".to_string(), Any::from(String::new()));
+            } else {
+              map.insert(CELL_DATA.to_string(), Any::from(String::new()));
+            }
             map
           })
           .collect::<Vec<CellTemplateData>>();

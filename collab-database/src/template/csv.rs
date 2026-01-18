@@ -2,7 +2,7 @@ use crate::database::{gen_database_id, gen_database_view_id};
 use crate::entity::FieldType;
 use crate::error::DatabaseError;
 use crate::template::builder::{DatabaseTemplateBuilder, FileUrlBuilder};
-use crate::template::date_parse::cast_string_to_timestamp;
+use crate::template::date_parse::parse_date_cell;
 use crate::template::entity::DatabaseTemplate;
 use percent_encoding::percent_decode_str;
 use rayon::prelude::*;
@@ -95,12 +95,17 @@ impl CSVTemplate {
     let mut builder =
       DatabaseTemplateBuilder::new(database_id.clone(), view_id.clone(), file_url_builder);
     for (field_index, field) in fields.into_iter().enumerate() {
+      let field_type = if field_index == 0 {
+        FieldType::RichText
+      } else {
+        field.field_type
+      };
       builder = builder
         .create_field(
           &resource,
           &database_id,
           &field.name,
-          field.field_type,
+          field_type,
           field_index == 0,
           |mut field_builder| {
             for row in rows.iter() {
@@ -269,7 +274,7 @@ fn is_date_cell(cells: &[&str]) -> bool {
   let half_count = cells.len() / 2;
   let valid_count = cells
     .iter()
-    .filter(|&&cell| cast_string_to_timestamp(cell).is_some())
+    .filter(|&&cell| parse_date_cell(cell).is_some())
     .count();
 
   if valid_count == 0 {

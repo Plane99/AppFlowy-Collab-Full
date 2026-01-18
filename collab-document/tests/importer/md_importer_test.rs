@@ -35,6 +35,62 @@ fn test_override_document() {
 }
 
 #[test]
+fn test_notion_columns_from_empty_header_table_with_content() {
+  let markdown = r#"|  |  |
+| --- | --- |
+| Left | Right |
+"#;
+
+  let result = markdown_to_document_data(markdown);
+  let page = get_page_block(&result);
+  let blocks = get_children_blocks(&result, &page.id);
+  assert_eq!(blocks.len(), 1);
+
+  let columns = blocks.first().unwrap();
+  assert_eq!(columns.ty, "simple_columns");
+
+  let cols = get_children_blocks(&result, &columns.id);
+  assert_eq!(cols.len(), 2);
+  assert_eq!(cols[0].ty, "simple_column");
+  assert_eq!(cols[1].ty, "simple_column");
+
+  let left_children = get_children_blocks(&result, &cols[0].id);
+  assert_eq!(left_children.len(), 1);
+  assert_eq!(left_children[0].ty, "paragraph");
+  assert_eq!(get_delta_json(&result, &left_children[0].id), json!([{ "insert": "Left" }]));
+
+  let right_children = get_children_blocks(&result, &cols[1].id);
+  assert_eq!(right_children.len(), 1);
+  assert_eq!(right_children[0].ty, "paragraph");
+  assert_eq!(get_delta_json(&result, &right_children[0].id), json!([{ "insert": "Right" }]));
+}
+
+#[test]
+fn test_notion_columns_from_large_empty_header_table() {
+  let markdown = r#"|  |  |  |  |  |  |  |
+| --- | --- | --- | --- | --- | --- | --- |
+|  |  |  |  |  |  |  |
+|  |  |  |  |  |  |  |
+|  |  |  |  |  |  |  |
+"#;
+
+  let result = markdown_to_document_data(markdown);
+  let page = get_page_block(&result);
+  let blocks = get_children_blocks(&result, &page.id);
+  assert_eq!(blocks.len(), 1);
+
+  let columns = blocks.first().unwrap();
+  assert_eq!(columns.ty, "simple_columns");
+
+  let cols = get_children_blocks(&result, &columns.id);
+  assert_eq!(cols.len(), 7);
+  for col in cols {
+    assert_eq!(col.ty, "simple_column");
+    assert!(get_children_blocks(&result, &col.id).is_empty());
+  }
+}
+
+#[test]
 fn test_inline_elements() {
   let markdown = "This is **bold**, *italic*, ~~delete~~, and [a link](https://example.com).";
 
@@ -513,22 +569,53 @@ fn test_aside() {
   let result = markdown_to_document_data(markdown);
 
   let page = get_page_block(&result);
-  let paragraphs = get_children_blocks(&result, &page.id);
 
-  assert_eq!(paragraphs.len(), 2);
+  let blocks = get_children_blocks(&result, &page.id);
+  assert_eq!(blocks.len(), 1);
 
-  let first_paragraph = paragraphs.first().unwrap();
-  let delta_json = get_delta_json(&result, &first_paragraph.id);
+  let callout = blocks.first().unwrap();
+  assert_eq!(callout.ty, "callout");
+  assert_eq!(callout.data.get("icon").unwrap(), "💡");
+
+  let delta_json = get_delta_json(&result, &callout.id);
   let expected_delta = json!([
-      {"insert": "<aside>\n💡 **Notion Tip:** Create a new page and select `Daily entry` ****from the list of template options to automatically generate the format below every day."},
-  ]);
-
-  assert_eq!(delta_json, expected_delta);
-
-  let second_paragraph = paragraphs.last().unwrap();
-  let delta_json = get_delta_json(&result, &second_paragraph.id);
-  let expected_delta = json!([
-      {"insert": "</aside>"}
+      {"attributes": {"bold": true}, "insert": "Notion Tip:"},
+      {"insert": " Create a new page and select "},
+      {"attributes": {"code": true}, "insert": "Daily entry"},
+      {"insert": " ****from the list of template options to automatically generate the format below every day."}
   ]);
   assert_eq!(delta_json, expected_delta);
+}
+
+#[test]
+fn test_details_toggle() {
+  let markdown = r#"<details>
+<summary>Toggle Title</summary>
+
+This is inside.
+
+- Item 1
+- Item 2
+
+</details>"#;
+
+  let result = markdown_to_document_data(markdown);
+  let page = get_page_block(&result);
+  let blocks = get_children_blocks(&result, &page.id);
+
+  assert_eq!(blocks.len(), 1);
+  let toggle = blocks.first().unwrap();
+  assert_eq!(toggle.ty, "toggle_list");
+
+  let delta_json = get_delta_json(&result, &toggle.id);
+  assert_eq!(delta_json, json!([{ "insert": "Toggle Title" }]));
+
+  let children = get_children_blocks(&result, &toggle.id);
+  assert!(children.len() >= 2);
+
+  assert_eq!(children[0].ty, "paragraph");
+  assert_eq!(get_delta_json(&result, &children[0].id), json!([{ "insert": "This is inside." }]));
+
+  assert_eq!(children[1].ty, "bulleted_list");
+  assert_eq!(get_delta_json(&result, &children[1].id), json!([{ "insert": "Item 1" }]));
 }

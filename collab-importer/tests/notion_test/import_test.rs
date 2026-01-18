@@ -11,6 +11,7 @@ use collab_document::blocks::{
   BlockType, extract_page_id_from_block_delta, extract_view_id_from_block_data,
   mention_block_content_from_delta,
 };
+use collab_document::blocks::TextDelta;
 
 use collab_document::importer::define::URL_FIELD;
 use collab_entity::CollabType;
@@ -30,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::env::temp_dir;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tempfile::tempdir;
 // #[tokio::test]
 // async fn import_test() {
 //   let (_cleaner, file_path) = sync_unzip_asset("d-1").await.unwrap();
@@ -96,6 +98,58 @@ async fn import_zip_file_contains_zip_as_attachments() {
   assert_eq!(imported_collabs[3].name, "Tasks");
   assert_eq!(imported_collabs[3].imported_collabs.len(), 18);
   assert_eq!(imported_collabs[3].resources[0].files.len(), 0);
+}
+
+#[tokio::test]
+async fn import_document_rewrites_local_attachment_href() {
+  let dir = tempdir().unwrap();
+  let root = dir.path();
+
+  let page_name = "Attachment Page";
+  let page_id = "103d4deadd2c80d39a5bc34d92cc7321";
+  let md_file_name = format!("{} {}.md", page_name, page_id);
+  let md_path = root.join(&md_file_name);
+
+  let pdf_name = "test.pdf";
+  let pdf_path = root.join(pdf_name);
+  tokio::fs::write(&pdf_path, b"%PDF-1.4\n%").await.unwrap();
+
+  let markdown = format!("[My PDF]({})\n", pdf_name);
+  tokio::fs::write(&md_path, markdown).await.unwrap();
+
+  let importer = NotionImporter::new(
+    1,
+    root,
+    uuid::Uuid::new_v4(),
+    "http://test.appflowy.cloud".to_string(),
+  )
+  .unwrap();
+  let info = importer.import().await.unwrap();
+
+  let view = info.views()[0].clone();
+  assert_eq!(view.notion_name, page_name);
+
+  let (document, resource) = view.as_document().await.unwrap();
+  assert_eq!(resource.files.len(), 1);
+  assert!(resource.files[0].ends_with(pdf_name));
+
+  let page_block_id = document.get_page_id().unwrap();
+  let block_ids = document.get_block_children_ids(&page_block_id);
+  assert_eq!(block_ids.len(), 1);
+
+  let block_id = &block_ids[0];
+  let (_, deltas) = document.get_block_delta(block_id).unwrap();
+  let href = deltas
+    .iter()
+    .filter_map(|d| match d {
+      TextDelta::Inserted(_, Some(attrs)) => attrs.get("href").map(|v| v.to_string()),
+      _ => None,
+    })
+    .next()
+    .unwrap();
+
+  assert!(href.contains("/api/file_storage/"));
+  assert!(href.contains(&view.view_id));
 }
 
 #[tokio::test]
@@ -585,7 +639,7 @@ async fn check_project_database(linked_view: &NotionPage, include_sub_dir: bool)
     RichText,
     SingleSelect,
     SingleSelect,
-    MultiSelect,
+    DateTime,
     SingleSelect,
     Number,
     RichText,
@@ -758,7 +812,7 @@ async fn import_level_test() {
   let mut folder = Folder::create(collab, None, default_folder_data(uid, &info.workspace_id));
 
   let view_hierarchy = info.build_nested_views().await;
-  assert_eq!(view_hierarchy.flatten_views().len(), 14);
+  assert_eq!(view_hierarchy.flatten_views().len(), 13);
   folder.insert_nested_views(view_hierarchy.into_inner(), uid);
 
   let first_level_views = folder.get_views_belong_to(&info.workspace_id, uid);

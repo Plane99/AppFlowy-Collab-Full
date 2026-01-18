@@ -103,7 +103,22 @@ pub(crate) fn collect_entry_resources(
     "heic",
     "heif",
   ];
-  let file_extensions = ["zip"];
+  let file_extensions = [
+    "zip",
+    "pdf",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "txt",
+    "json",
+    "mp3",
+    "wav",
+    "mp4",
+    "mov",
+  ];
 
   let mut image_paths = Vec::new();
   let mut file_paths = Vec::new();

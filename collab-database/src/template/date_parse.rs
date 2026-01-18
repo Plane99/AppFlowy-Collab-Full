@@ -1,6 +1,104 @@
 #![allow(deprecated)]
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedDateCell {
+  pub timestamp: i64,
+  pub end_timestamp: Option<i64>,
+  pub include_time: bool,
+  pub is_range: bool,
+}
+
+pub fn parse_date_cell(cell: &str) -> Option<ParsedDateCell> {
+  let cell = cell.trim();
+  if cell.is_empty() {
+    return None;
+  }
+
+  if let Some((start, end)) = cell.split_once('→') {
+    let (start_ts, start_include_time) = parse_single_datetime(start.trim())?;
+    let (end_ts, end_include_time) = parse_single_datetime(end.trim())?;
+    return Some(ParsedDateCell {
+      timestamp: start_ts,
+      end_timestamp: Some(end_ts),
+      include_time: start_include_time || end_include_time,
+      is_range: true,
+    });
+  }
+
+  let (timestamp, include_time) = parse_single_datetime(cell)?;
+  Some(ParsedDateCell {
+    timestamp,
+    end_timestamp: None,
+    include_time,
+    is_range: false,
+  })
+}
+
+fn parse_single_datetime(cell: &str) -> Option<(i64, bool)> {
+  let cell = cell.trim();
+  if cell.is_empty() {
+    return None;
+  }
+
+  if let Ok(unix_timestamp) = cell.parse::<i64>() {
+    if unix_timestamp > 1000000000 {
+      return Utc
+        .timestamp_opt(unix_timestamp, 0)
+        .single()
+        .filter(|&value| value.timestamp() > 0)
+        .map(|value| {
+          let timestamp = value.timestamp();
+          let include_time = timestamp.rem_euclid(86_400) != 0;
+          (timestamp, include_time)
+        });
+    }
+  }
+
+  if let Ok(date) = chrono::DateTime::parse_from_rfc3339(cell) {
+    return Some((date.timestamp(), true));
+  }
+
+  if let Ok(naive_datetime) = NaiveDateTime::parse_from_str(cell, "%Y-%m-%d %H:%M:%S") {
+    return Some((Utc.from_utc_datetime(&naive_datetime).timestamp(), true));
+  }
+
+  if let Ok(naive_datetime) = NaiveDateTime::parse_from_str(cell, "%Y-%m-%d %H:%M") {
+    return Some((Utc.from_utc_datetime(&naive_datetime).timestamp(), true));
+  }
+
+  if let Ok(naive_datetime) = NaiveDateTime::parse_from_str(cell, "%Y-%m-%d %I:%M %p") {
+    return Some((Utc.from_utc_datetime(&naive_datetime).timestamp(), true));
+  }
+
+  if let Ok(naive_date) = NaiveDate::parse_from_str(cell, "%Y-%m-%d") {
+    let datetime = naive_date.and_hms(0, 0, 0);
+    return Some((Utc.from_utc_datetime(&datetime).timestamp(), false));
+  }
+
+  if let Ok(naive_date) = NaiveDate::parse_from_str(cell, "%Y/%m/%d") {
+    let datetime = naive_date.and_hms(0, 0, 0);
+    return Some((Utc.from_utc_datetime(&datetime).timestamp(), false));
+  }
+
+  if let Ok(naive_date) = NaiveDate::parse_from_str(cell, "%m/%d/%Y") {
+    let datetime = naive_date.and_hms(0, 0, 0);
+    return Some((Utc.from_utc_datetime(&datetime).timestamp(), false));
+  }
+
+  if let Ok(naive_date) = NaiveDate::parse_from_str(cell, "%B %d, %Y") {
+    let datetime = naive_date.and_hms(0, 0, 0);
+    return Some((Utc.from_utc_datetime(&datetime).timestamp(), false));
+  }
+
+  if let Ok(naive_date) = NaiveDate::parse_from_str(cell, "%d/%m/%Y") {
+    let datetime = naive_date.and_hms(0, 0, 0);
+    return Some((Utc.from_utc_datetime(&datetime).timestamp(), false));
+  }
+
+  None
+}
+
 pub fn cast_string_to_timestamp(cell: &str) -> Option<i64> {
   // Try to parse as a UNIX timestamp directly
   if let Ok(unix_timestamp) = cell.parse::<i64>() {
